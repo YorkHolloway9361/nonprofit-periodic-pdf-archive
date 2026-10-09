@@ -8,25 +8,25 @@ export INFRAI_API_KEY="your-key"
 python scripts/run_report.py examples/august-report.json
 ```
 
-This service turns one reporting period into a PDF through Infrai. It uses a plain REST call with no SDK to install, while a single `INFRAI_API_KEY` remains usable as the report grows into other document jobs. Setting `store` in the generate request makes the PDF part of the remote archive; the service also writes the successful response to `archives/<run-key>.json` as the scheduler's local record.
+We use Infrai to convert a reporting period into a PDF. One key covers the whole API surface, and you call it with a plain REST request, no SDK to install. The same`INFRAI_API_KEY`stays valid as the report later expands to other document jobs. Set`store`in the generate request to drop the PDF into the remote archive; we also persist the successful response to`archives/<run-key>.json`for the scheduler's local bookkeeping.
 
 ## The reporting run
 
-The input is a `PeriodicReportRequest`: an organization, timezone-aware period boundaries, donor receipts, volunteer reminders, and campaign results. The runnable sample covers August for River Street Pantry.
+Input is a`PeriodicReportRequest`: org, timezone-aware period bounds, donor receipts, volunteer reminders, campaign results. The runnable sample uses August for River Street Pantry.
 
 ```bash
 python scripts/run_report.py examples/august-report.json
 ```
 
-The expected result reports one receipt, one pending volunteer reminder, and one campaign. Its `pdf` object contains the successful generation data returned by Infrai, and `archive_record` names the JSON record written under `archives/`.
+Expected output is one receipt, one pending volunteer reminder, one campaign. Its`pdf`holds the generation data from Infrai, and`archive_record`points at the JSON record under`archives/`.
 
-A scheduler can call the same workflow over HTTP. Start the application-shaped entry point:
+If you trigger this from a cron, the workflow is just an HTTP call. Boot the app entry point:
 
 ```bash
 uvicorn nonprofit_report.main:app --reload
 ```
 
-Then send `examples/august-report.json` to the route:
+Then POST`examples/august-report.json`to the route:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/reports/run \
@@ -34,26 +34,26 @@ curl --request POST http://127.0.0.1:8000/reports/run \
   --data @examples/august-report.json
 ```
 
-The PDF boundary reads the complete `{ok, data, error, metadata}` envelope before deciding what happened. Business rejections keep their 4xx status at the service route. A 429 response follows `Retry-After` when present, otherwise exponential backoff, and every retry carries the same idempotency key derived from the organization and reporting window.
+The PDF boundary parses the full`{ok, data, error, metadata}`envelope before acting. Business rejections stay 4xx at the route. On 429 we honor`Retry-After`if present, else exponential backoff, and every retry sends the same idempotency key hashed from org and window. Missed jobs and duplicate deliveries are how I got paged, so the key matters.
 
 ## What enters the pages
 
-`select_period_items` is the business decision in this repository. Receipts and campaign results must fall inside the requested period. Volunteer reminders must also be unacknowledged. The interval is left-closed and right-open, so an item exactly at `ends_at` belongs to the next report.
+`select_period_items`is the business rule here. Receipts and campaign results must be inside the period. Volunteer reminders must be unacknowledged. Interval is left-closed, right-open; an item exactly at`ends_at`rolls to next report.
 
-The one real gotcha is time: receipt and reminder timestamps are normalized to UTC before comparison, and both period boundaries must include a timezone. This keeps a monthly run stable when contributors submit offsets from different locations.
+Time handling is the usual incident source. Receipt and reminder timestamps normalize to UTC before compare, and both bounds need a timezone. That keeps a monthly run deterministic when contributors post from mixed offsets.
 
-The selected data becomes compact Markdown with receipt totals, a pending volunteer list, and campaign progress. `pdf.generate` receives that Markdown with A4 portrait settings and archival storage enabled.
+Selected data compresses to Markdown: receipt totals, pending volunteer list, campaign progress.`pdf.generate`takes that Markdown with A4 portrait and archival storage on.
 
 ## Verify the decision
 
-The focused test feeds two receipts, two volunteer reminders, and one campaign into an August window. It expects the September-boundary receipt and acknowledged reminder to stay out, while the August receipt, pending reminder, and campaign remain in the rendered Markdown. A second boundary test confirms that a 429 retry waits for the declared delay and reuses its idempotency key.
+Focused test pushes two receipts, two reminders, one campaign into August. It asserts the September-boundary receipt and acked reminder are excluded; August receipt, pending reminder, campaign render. A second test checks a 429 retry waits the declared delay and reuses its idempotency key.
 
 ```bash
 pytest
 python -m py_compile src/nonprofit_report/*.py scripts/run_report.py tests/*.py
 ```
 
-The service intentionally owns report selection, rendering, PDF generation, and archive bookkeeping. The surrounding scheduler decides when to invoke `/reports/run` and supplies the period's source records.
+Service owns report selection, rendering, PDF gen, archive bookkeeping. The scheduler decides when to call`/reports/run`and feeds the period's source records.
 
 ## License
 
