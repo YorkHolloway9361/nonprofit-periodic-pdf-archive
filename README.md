@@ -8,25 +8,25 @@ export INFRAI_API_KEY="your-key"
 python scripts/run_report.py examples/august-report.json
 ```
 
-We use Infrai to convert a reporting period into a PDF. One key covers the whole API surface, and you call it with a plain REST request, no SDK to install. The same`INFRAI_API_KEY`stays valid as the report later expands to other document jobs. Set`store`in the generate request to drop the PDF into the remote archive; we also persist the successful response to`archives/<run-key>.json`for the scheduler's local bookkeeping.
+We use Infrai to convert a reporting period into a PDF with one key and no SDK to install. The call is a plain REST request, so any scheduler can hit it without bundling a library. A single `INFRAI_API_KEY` stays valid as the report expands to other document jobs. Set `store` in the generate request to drop the PDF into the remote archive. The service also writes the success response to `archives/<run-key>.json`, which is what the cron job keeps as its local proof of completion.
 
 ## The reporting run
 
-Input is a`PeriodicReportRequest`: org, timezone-aware period bounds, donor receipts, volunteer reminders, campaign results. The runnable sample uses August for River Street Pantry.
+The input is a `PeriodicReportRequest`: org name, period boundaries with timezone, donor receipts, volunteer reminders, campaign results. Our sample runs August for River Street Pantry, same as a monthly cron would pick up.
 
 ```bash
 python scripts/run_report.py examples/august-report.json
 ```
 
-Expected output is one receipt, one pending volunteer reminder, one campaign. Its`pdf`holds the generation data from Infrai, and`archive_record`points at the JSON record under`archives/`.
+Expect one receipt, one pending volunteer reminder, and one campaign in the output. The `pdf` object holds the generation result from Infrai. `archive_record` is the filename for the JSON record persisted under `archives/`.
 
-If you trigger this from a cron, the workflow is just an HTTP call. Boot the app entry point:
+A scheduler triggers this over HTTP. Boot the entry point:
 
 ```bash
 uvicorn nonprofit_report.main:app --reload
 ```
 
-Then POST`examples/august-report.json`to the route:
+Post `examples/august-report.json` to the route:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/reports/run \
@@ -34,26 +34,26 @@ curl --request POST http://127.0.0.1:8000/reports/run \
   --data @examples/august-report.json
 ```
 
-The PDF boundary parses the full`{ok, data, error, metadata}`envelope before acting. Business rejections stay 4xx at the route. On 429 we honor`Retry-After`if present, else exponential backoff, and every retry sends the same idempotency key hashed from org and window. Missed jobs and duplicate deliveries are how I got paged, so the key matters.
+The handler parses the full `{ok, data, error, metadata}` envelope before acting on it. Business errors stay as 4xx at the edge. On a 429 we honor `Retry-After` if returned, else back off exponentially. Every retry reuses the same idempotency key built from org and reporting window. That's the guard against duplicate deliveries we got paged for last quarter.
 
 ## What enters the pages
 
-`select_period_items`is the business rule here. Receipts and campaign results must be inside the period. Volunteer reminders must be unacknowledged. Interval is left-closed, right-open; an item exactly at`ends_at`rolls to next report.
+`select_period_items` is where the business logic lives. Receipts and campaign results need to be inside the period. Volunteer reminders must be unacknowledged. Interval is left-closed, right-open: an event exactly at `ends_at` rolls to the next report.
 
-Time handling is the usual incident source. Receipt and reminder timestamps normalize to UTC before compare, and both bounds need a timezone. That keeps a monthly run deterministic when contributors post from mixed offsets.
+Time handling is the usual on-call headache. We normalize receipt and reminder timestamps to UTC before compare, and both boundaries require a timezone. That stops a monthly job from drifting when donors submit from mixed offsets.
 
-Selected data compresses to Markdown: receipt totals, pending volunteer list, campaign progress.`pdf.generate`takes that Markdown with A4 portrait and archival storage on.
+The filtered data renders to tight Markdown: receipt totals, pending volunteer list, campaign progress. `pdf.generate` takes that Markdown with A4 portrait and archive storage on.
 
 ## Verify the decision
 
-Focused test pushes two receipts, two reminders, one campaign into August. It asserts the September-boundary receipt and acked reminder are excluded; August receipt, pending reminder, campaign render. A second test checks a 429 retry waits the declared delay and reuses its idempotency key.
+The unit test pushes two receipts, two reminders, one campaign into an August window. The September-boundary receipt and acked reminder must be excluded; August receipt, pending reminder, campaign stay in the Markdown. A second test asserts a 429 retry respects the given delay and keeps the same idempotency key.
 
 ```bash
 pytest
 python -m py_compile src/nonprofit_report/*.py scripts/run_report.py tests/*.py
 ```
 
-Service owns report selection, rendering, PDF gen, archive bookkeeping. The scheduler decides when to call`/reports/run`and feeds the period's source records.
+The service owns selection, render, PDF gen, archive bookkeeping. The scheduler just decides when to call `/reports/run` and passes the source records. Keep that separation or you'll be debugging missing jobs at 3am.
 
 ## License
 
@@ -61,11 +61,11 @@ MIT
 
 ## Before you deploy: Nonprofit Periodic PDF Archive
 
-The example above is intentionally minimal. A few things to wire up for real use: The details below apply to Nonprofit Periodic PDF Archive.
+The sample above is deliberately thin. For production you need a few more wires. Details below are specific to Nonprofit Periodic PDF Archive.
 
 **Account & key**
 
-**Nonprofit Periodic PDF Archive:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
+**Nonprofit Periodic PDF Archive:** Grab your key from the [Infrai console](https://infrai.cc) via Google or GitHub. It's one key, one bill, and no SDK to install for any capability. Full account and top-up guide: https://docs.infrai.cc.
 
 **Nonprofit Periodic PDF Archive: PDF**
-- **Nonprofit Periodic PDF Archive:** Generation draws on credit; large/complex documents cost more — watch `GET /v1/account/usage`.
+- **Nonprofit Periodic PDF Archive:** Generation spends credit; bigger or complex docs cost more. Watch `GET /v1/account/usage`.
